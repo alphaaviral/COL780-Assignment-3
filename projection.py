@@ -135,24 +135,35 @@ def getMod(point1, point2):
     return math.sqrt((point1[0]-point2[0])**2 + (point1[1]-point2[1])**2 + (point1[2]-point2[2])**2)
 
 def getArucoCorners(frame_gray):
-    
+
     res = detector.detect(frame_gray)
-    if res[0].tag_id > res[1].tag_id:
-        temp = res[0]
-        res[0] = res[1]
-        res[1] = temp
+
     for tag in res:
         tag.corners = np.rint(tag.corners).astype('int32')
         tag.center = np.rint(tag.center).astype('int32')
+    if len(res) == 1:
+        points = np.zeros((4,2), dtype = 'int32')
+        for i in range(4):
+            points[i][0] = res[0].corners[i][0]
+            points[i][1] = res[0].corners[i][1]
+        return points
+    
+    elif len(res) == 2:
+        if res[0].tag_id > res[1].tag_id:
+            temp = res[0]
+            res[0] = res[1]
+            res[1] = temp
 
-    points = np.zeros((6,2), dtype = 'int32')
-    for i in range(4):
-        points[i][0] = res[0].corners[i][0]
-        points[i][1] = res[0].corners[i][1]
-    for i in range(2):
-        points[i+4][0] = res[1].corners[i][0]
-        points[i+4][1] = res[1].corners[i][1]
-    return points
+        points = np.zeros((8,2), dtype = 'int32')
+        for i in range(4):
+            points[i][0] = res[0].corners[i][0]
+            points[i][1] = res[0].corners[i][1]
+        for i in range(4):
+            points[i+4][0] = res[1].corners[i][0]
+            points[i+4][1] = res[1].corners[i][1]
+        return points
+    else:
+        return None
 
 def getMatrices(imageCoords, worldCoords):
     A = np.zeros((12, 11))
@@ -235,10 +246,10 @@ def getVanishingPoint(l1, l2):
     y = 1.0*Dy/D
     return np.array([[x], [y], [1]])
 
-def getHomography(mapping):
+def getHomography(src_points, dst_points):
     # homography = np.zeros((3,3))
-    src_points = mapping[:, 1:3]
-    dst_points = mapping[:, 3:5]
+    # src_points = mapping[:, 1:3]
+    # dst_points = mapping[:, 3:5]
     A = np.zeros((8,8))
     B = np.zeros((8,1))
     for i in range(4):
@@ -261,55 +272,94 @@ def getHomography(mapping):
     homography = homography.reshape(3, 3)
     return homography
 
+def getAffineMatrix(src_points, dst_points): #Get affine parameters from 3 points in consecutive frames.
+    src_points[:, 0], src_points[:, 1] = src_points[:, 1], src_points[:, 0].copy()
+    dst_points[:, 0], dst_points[:, 1] = dst_points[:, 1], dst_points[:, 0].copy()
+    affMatrix = np.zeros((2,3))
+    Y = np.array([[src_points[0][0]], [src_points[1][0]], [src_points[2][0]]])
+    A = np.array([[dst_points[0][0], dst_points[0][1], 1], [dst_points[1][0], dst_points[1][1], 1], [dst_points[2][0], dst_points[2][1], 1]])
+    affMatrix[0] = np.transpose(np.linalg.solve(A, Y))
+    Y = np.array([[src_points[0][1]], [src_points[1][1]], [src_points[2][1]]])
+    affMatrix[1] = np.transpose(np.linalg.solve(A, Y))
+    return affMatrix
+
 frame_id=0
-video = cv2.VideoCapture('squareVideo.mp4')
+video = cv2.VideoCapture('vid.mov')
 frameCount = video.get(cv2.CAP_PROP_FRAME_COUNT)
-cubePoints = np.array([[0,0,0], [6.5,0,0], [6.5, 0, 6.5], [0, 0, 6.5],[0,6.5,0], [6.5,6.5,0], [6.5, 6.5, 6.5], [0, 6.5, 6.5]])
-world = np.array([[0,13,13.2], [13,13,13.2], [13,0,13.2], [0, 0, 13.2], [0,13.2,0], [13, 13.2, 0]])
+cubePoints = np.array([[0,0,13], [0,0,6.5], [6.5, 0, 6.5], [6.5, 0, 13],[0,6.5,6.5], [0,6.5,13], [6.5, 6.5, 6.5], [6.5, 6.5, 13]])
+# world = np.array([[0,13,13.2], [13,13,13.2], [13,0,13.2], [0, 0, 13.2], [0,13.2,0], [13, 13.2, 0]])
+world = [[0,13.2,0], [13,13.2,0], [13,13.2,13.2], [0, 13.2, 13.2], [0,0,0], [13, 0, 0]]
 prev_img_gray = None
-prev_hessian = None
+# prev_hessian = None
+projection = None
+prevVertices = None
 
 while(frame_id<frameCount):
 
     video.set(cv2.CAP_PROP_POS_FRAMES, frame_id)
     frame_id += 1
-    if frame_id!=1:
-        prev_img_gray = img_gray
-        prev_hessian = hessian
+    
+    # if frame_id!=1:
+    #     prev_img_gray = img_gray
+    #     prev_hessian = hessian
 
     ret, img = video.read()
-    img = cv2.imread('image3.jpg', cv2.IMREAD_COLOR)
     img_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    hessian = calculateHessian(img_gray, 7)
+    # # hessian = calculateHessian(img_gray, 7)
 
-    # for point in hessian:
-    #     img = cv2.circle(img, (point[1],point[0]), 25, (0,0,255), -1)
+    # # for point in hessian:
+    # #     img = cv2.circle(img, (point[1],point[0]), 25, (0,0,255), -1)
 
-    if len(hessian)!=4:
-        hessian = prev_hessian
-        img_gray = prev_img_gray
-        print("not 4")
-        continue
+    # if len(hessian)!=4:
+    #     hessian = prev_hessian
+    #     img_gray = prev_img_gray
+    #     print("not 4")
+    #     continue
 
-    elif frame_id==1:
-        continue
+    # elif frame_id==1:
+    #     continue
     
+    # else:
+    #     mapping = mapHessianPoints(prev_img_gray, img_gray, prev_hessian, hessian, 27)
+        
+    #     for mapIndex in range(len(mapping)):
+    #         map = mapping[mapIndex]
+    #         if mapIndex==0:
+    #             img = cv2.circle(img, (map[4],map[3]), 25, (0,0,255), -1)
+    #         elif mapIndex==1:
+    #             img = cv2.circle(img, (map[4],map[3]), 25, (0,255,0), -1)
+    #         elif mapIndex==2:
+    #             img = cv2.circle(img, (map[4],map[3]), 25, (255,0,0), -1)
+    #         elif mapIndex==3:
+    #             img = cv2.circle(img, (map[4],map[3]), 25, (0,255,255), -1)
+    #     hessian = mapping[:, 3:5]
+    #     homography = getHomography(mapping)
+
+    if frame_id!=1:
+        prevVertices = vertices
+        prev_img_gray = img_gray
+    vertices = getArucoCorners(img_gray)
+    # if len(vertices)!=6:
+    #     print("Not6")
+    if frame_id==1:
+        if len(vertices)!=8:
+            print("detection error in frame 1")
+        A,Y = getMatrices(vertices[0:6,:], world)
+        projection = getProjectionMatrix(A, Y)
+        vertices = vertices[4:8,:]
+        # img = makeCube(img, cubePoints, projection)
+        # cv2.imwrite('out/image'+str(frame_id)+'.jpg', img)
+        
+
+    # vertices = vertices[0:4,:]
     else:
-        mapping = mapHessianPoints(prev_img_gray, img_gray, prev_hessian, hessian, 27)
-        
-        for mapIndex in range(len(mapping)):
-            map = mapping[mapIndex]
-            if mapIndex==0:
-                img = cv2.circle(img, (map[4],map[3]), 25, (0,0,255), -1)
-            elif mapIndex==1:
-                img = cv2.circle(img, (map[4],map[3]), 25, (0,255,0), -1)
-            elif mapIndex==2:
-                img = cv2.circle(img, (map[4],map[3]), 25, (255,0,0), -1)
-            elif mapIndex==3:
-                img = cv2.circle(img, (map[4],map[3]), 25, (0,255,255), -1)
-        hessian = mapping[:, 3:5]
-        homography = getHomography(mapping)
-        
+        if len(vertices)==8:
+            vertices = vertices[4:8,:]
+        homography = getHomography(prevVertices, vertices)
+        projection = np.matmul(homography, projection)
+        # img = makeCube(img, cubePoints, projection)
+        # cv2.imwrite('out/image'+str(frame_id)+'.jpg', img)
+
         
 
         # line1 = getLine(hessian[0,:], hessian[1,:])
@@ -332,6 +382,6 @@ while(frame_id<frameCount):
     # A,Y = getMatrices(calibration_points, world)
     # projection = getProjectionMatrix(A, Y)
     # decomposeProjection(projection)
-    # img = makeCube(img, cubePoints, projection)
+    img = makeCube(img, cubePoints, projection)
     print(frame_id)
     cv2.imwrite('out/image'+str(frame_id)+'.jpg', img)
